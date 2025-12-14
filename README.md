@@ -1,5 +1,3 @@
-# C Project
+# ThreadPool
 
-A structured C project with build system and testing support.
-
-## Project Structure
+a thread pool implementation in C
