@@ -10,9 +10,6 @@
 #define FAILURE "\x1b[31m"
 #define ABSFAILURE "\x1b[91m"
 
-static unsigned test_num = 0;
-static unsigned successes = 0;
-static unsigned failures = 0;
 
 #define init_test(n)                                                           \
   do {                                                                         \

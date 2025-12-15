@@ -32,13 +32,29 @@ static inline void ThreadPoolCached_init(ThreadPool *thp);
 
 static void *thread_fn(void *_args) { 
   WorkerThreadArgs *args ;
-thread_work_start:
   args = (WorkerThreadArgs*)_args;
+
+thread_work_wait:
+  // wait for a task, if it recieves a signal that a task is provided it executes it 
+  // FIX: otherwise if it recieved an exit signal, it exits
+  
+  pthread_mutex_lock(args -> master -> available_task_mutex + args -> id);
+
+  while (args -> master -> tasks[args -> id] == NULL && !args -> master -> exit_status[args -> id])
+    pthread_cond_wait(args -> master -> available_task_cond + args -> id, args -> master ->available_task_mutex + args -> id); 
+
+  pthread_mutex_unlock(args -> master -> available_task_mutex + args -> id);
+
+  if (args -> master -> exit_status[args -> id])
+    goto thread_work_exit;
+ 
+
+thread_work_start:
   // thread does its task
   // it toggles its busy status index, subtracts the ready_threads_num after locking its mutex, unlocks the mutex, does its task
-  args -> master -> busy_status[ args -> id ] = true;
 
   pthread_mutex_lock(&args -> master -> available_thread_mutex);
+  args -> master -> busy_status[ args -> id ] = true;
   args -> master -> ready_tid_n --;
   pthread_mutex_unlock(&args -> master -> available_thread_mutex);
 
@@ -47,8 +63,8 @@ thread_work_start:
 
   // got its task done, adds to read_threads_num and toggles its busy index to signal its free, signals that a change has happened
   // to available_thread_cond for a blocking pool
-  args -> master -> busy_status[args -> id] = false;
   pthread_mutex_lock(args -> master -> available_task_mutex + args -> id);
+  args -> master -> busy_status[args -> id] = false;
   args -> master -> ready_tid_n ++;
   pthread_cond_broadcast(&args -> master -> available_thread_cond);
 
@@ -59,16 +75,9 @@ thread_work_start:
   if ( args -> master -> exit_status[args -> id] )
     goto thread_work_exit;
 
-
-  pthread_mutex_unlock(args -> master -> available_task_mutex + args -> id);
-
-  while (args -> master -> tasks[args -> id] == NULL)
-    pthread_cond_wait(args -> master -> available_task_cond + args -> id, args -> master ->available_task_mutex + args -> id); 
-
-  pthread_mutex_unlock(args -> master -> available_task_mutex + args -> id);
-  
+ 
   // at this point we recieved a signal that the task is no long set to NULL, we go to thread_work_start to restart execution
-  goto thread_work_start;
+  goto thread_work_wait;
 
 thread_work_exit:
   free(args);
@@ -88,6 +97,7 @@ static inline void ThreadPoolStatic_init(ThreadPool *thp, unsigned int num) {
     num = logical_cores_count();
 
   thp->thread_n = num;
+  thp->ready_tid_n = num;
   thp->threads = malloc(sizeof(pthread_t) * num);
   thp->tasks = malloc(sizeof(Task) * num);
   thp->args = malloc(sizeof(Args) * num);
@@ -98,6 +108,7 @@ static inline void ThreadPoolStatic_init(ThreadPool *thp, unsigned int num) {
   pthread_mutex_init(&thp -> available_thread_mutex, NULL);
   pthread_cond_init(&thp -> available_thread_cond, NULL);
   for(unsigned i = 0; i < num; i++){
+    thp -> busy_status[i] = false;
     thp -> exit_status[i] = false;
     pthread_mutex_init(thp -> available_task_mutex + i, NULL);
     pthread_cond_init(thp -> available_task_cond + i, NULL);
@@ -118,7 +129,7 @@ static inline void ThreadPoolCached_init(ThreadPool *thp) {
 
 static inline int32_t poll_threads(bool *busy_status, uint16_t n){
   for(uint16_t i = 0; i < n; i++)
-    if ( busy_status[i] )
+    if ( !busy_status[i] )
       return i;
   return -1; 
 }
@@ -126,7 +137,9 @@ void ThreadPool_execute(ThreadPool *thp, Task task, Args args){
   int32_t poll_threads_out;
 poll:
   // we poll the threads to see if any is available 
+  pthread_mutex_lock(&thp -> available_thread_mutex);
   poll_threads_out = poll_threads(thp -> busy_status, thp -> thread_n);
+  pthread_mutex_unlock(&thp -> available_thread_mutex);
 
   // case 1: no thread is available: we wait until one is, when a thread finished execution and before sleeping
   // it increments the pool's read_tid_n and broadcasts a signal that will reawaken us to recheck the status of 
@@ -156,7 +169,10 @@ poll:
 void ThreadPool_shutdown(ThreadPool *thp) {
 
   for (unsigned i = 0; i < thp -> thread_n; i++){
+    pthread_mutex_lock(thp -> available_task_mutex + i);
     thp -> exit_status[i] = true;
+    pthread_cond_broadcast(thp -> available_task_cond + i);
+    pthread_mutex_unlock(thp -> available_task_mutex + i);
   }
   for (unsigned i = 0; i < thp->thread_n; i++) {
     pthread_join(thp->threads[i], NULL);
