@@ -1,4 +1,5 @@
 #include <stdlib.h>
+#include <unistd.h>
 
 
 #include "../test.h"
@@ -23,6 +24,7 @@ int main(){
   ThreadPool_execute(&thp, (Task)printd, arg + 3);
   ThreadPool_execute(&thp, (Task)printd, arg + 4);
   ThreadPool_execute(&thp, (Task)printd, arg + 5);
+  sleep(1);
   ThreadPool_shutdown(&thp);
   return 0;
 }
