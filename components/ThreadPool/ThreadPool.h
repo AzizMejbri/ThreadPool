@@ -5,7 +5,7 @@
 #include <pthread.h>
 #include <stdint.h>
 #include <stdbool.h>
-
+#include "../../utils/queue/task_queue.h"
 
 // Throughput = N / (1 + α(N-1) + βN(N-1))
 // Where:
@@ -41,6 +41,8 @@ typedef enum {
 
 void ThreadPool_init(ThreadPool *thp, unsigned int thread_num, int flags);
 void ThreadPool_execute(ThreadPool *thp, Task task, Args args);
+void ThreadPool_execute_with_timeout(ThreadPool *thp, Task task, Args args, unsigned timeout);
 void ThreadPool_shutdown(ThreadPool *thp);
+
 
 #endif

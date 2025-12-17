@@ -2,10 +2,10 @@
 
 #include <pthread.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <stdlib.h>
 
 #include "../../utils/cores.h"
+#include "../../utils/timeout/timeout.h"
 
 // void ThreadPool_init(ThreadPool *thp, unsigned int thread_num, int flags);
 // void ThreadPool_execute(ThreadPool *thp, Task task, Args args);
@@ -17,10 +17,6 @@
 // }
 // ThreadPool_cleanup(thp);
 //
-
-#define set_bit(bitset, n) (bitset | (1 << n))
-#define clr_bit(bitset, n) (bitset & ~(1 << n))
-#define get_bit(bitset, n) (bitset >> n)
 
 typedef struct {
   ThreadPool* master;
@@ -168,6 +164,9 @@ void ThreadPool_shutdown(ThreadPool *thp) {
   }
   for (unsigned i = 0; i < thp->thread_n; i++) {
     pthread_join(thp->threads[i], NULL);
+    // TODO: implement timeouts so that the shutting down of the threadpool doesnt wait forever for a thread
+    //       to work
+    wait_timeout(60);
   }
 
   free(thp->threads);

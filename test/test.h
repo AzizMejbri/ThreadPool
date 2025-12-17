@@ -3,28 +3,27 @@
 
 #include <stdio.h>
 
-#define SUCCESS "\x1b[36m"
-#define ALMOSTSUCCESS "\x1b[32m"
-#define SEMISUCCESS "\x1b[93m"
-#define MID "\x1b[33m"
-#define FAILURE "\x1b[31m"
-#define ABSFAILURE "\x1b[91m"
+#define SUCCESS "\033[36m"
+#define ALMOSTSUCCESS "\033[32m"
+#define SEMISUCCESS "\033[93m"
+#define MID "\033[33m"
+#define FAILURE "\033[31m"
+#define ABSFAILURE "\033[91m"
 
-
-#define init_test(n)                                                           \
-  do {                                                                         \
-    test_num = n;                                                              \
-  } while (0)
+static unsigned test_num = 0;
+static unsigned successes = 0;
+static unsigned failures = 0;
 
 #define test(x)                                                                \
   do {                                                                         \
     if (x) {                                                                   \
-      printf("\x1b[32m✓\x1b[m");                                               \
+      printf("\033[32m✓\033[m");                                               \
       successes++;                                                             \
     } else {                                                                   \
-      printf("\x1b[31m✘\x1b[m");                                               \
+      printf("\033[31m✘\033[m");                                               \
       failures++;                                                              \
     }                                                                          \
+    test_num++;                                                                \
   } while (0)
 
 #define summary()                                                              \
@@ -42,7 +41,7 @@
       col = FAILURE;                                                           \
     else                                                                       \
       col = ABSFAILURE;                                                        \
-    printf("\n%sEnd Result: %f\x1b[m", col, ratio);                            \
+    printf("\n%sEnd Result: %f%%\033[m", col, ratio * 100);                    \
   } while (0)
 
 #endif
