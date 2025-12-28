@@ -1,0 +1,118 @@
+
+# =================== GITHUB LINGUIST CONFIGURATION ===================
+# This file helps GitHub correctly identify language percentages
+
+# GENERAL SETTINGS
+* linguist-detectable=true
+* -linguist-vendored
+* -linguist-documentation
+
+# =================== SPECIFIC LANGUAGE MAPPINGS ===================
+
+
+# C 
+*.c linguist-language=C
+*.h linguist-language=C
+
+# C++
+*.cpp linguist-language=C++
+*.hpp linguist-language=C++
+*.cc linguist-language=C++
+*.hh linguist-language=C++
+
+# JAVA
+*.java linguist-language=Java
+*.class linguist-vendored
+
+# TYPESCRIPT / JAVASCRIPT
+*.ts linguist-language=TypeScript
+*.tsx linguist-language=TypeScript
+*.js linguist-language=JavaScript
+*.jsx linguist-language=JavaScript
+
+# WEB FILES
+*.html linguist-language=HTML
+*.css linguist-language=CSS
+*.scss linguist-language=SCSS
+*.sass linguist-language=Sass
+
+# CONFIGURATION FILES
+*.yml linguist-language=YAML
+*.yaml linguist-language=YAML
+*.json linguist-language=JSON
+*.properties linguist-language=Properties
+*.xml linguist-language=XML
+
+# SHELL SCRIPTS
+*.sh linguist-language=Shell
+*.bash linguist-language=Shell
+Makefile linguist-language=Makefile
+makefile linguist-language=Makefile
+
+# DOCKER
+Dockerfile linguist-language=Dockerfile
+dockerfile linguist-language=Dockerfile
+*.dockerfile linguist-language=Dockerfile
+docker-compose.yml linguist-language=YAML
+
+# MARKDOWN
+*.md linguist-language=Markdown
+*.mdx linguist-language=Markdown
+
+# R
+*.R  linguist-language=R 
+*.r  linguist-language=R 
+
+
+# csv
+*.csv linguist-vendored
+
+# =================== EXCLUDE GENERATED/VENDORED FILES ===================
+
+# Java build outputs
+exp-track-app/target/** linguist-vendored
+*.class linguist-vendored
+*.jar linguist-vendored
+
+# Frontend build outputs
+exp-track-front/dist/** linguist-vendored
+exp-track-front/node_modules/** linguist-vendored
+*.min.js linguist-vendored
+*.min.css linguist-vendored
+
+# SSL certificates and keys
+*.pem linguist-vendored
+*.key linguist-vendored
+*.p12 linguist-vendored
+*.crt linguist-vendored
+
+# Log files and temporary files
+*.log linguist-vendored
+*.tmp linguist-vendored
+*.temp linguist-vendored
+
+# Database files
+*.db linguist-vendored
+*.sqlite linguist-vendored
+
+# IDE and editor files
+.vscode/** linguist-vendored
+.idea/** linguist-vendored
+*.iml linguist-vendored
+
+# Git and OS files
+.gitattributes linguist-vendored
+.gitignore linguist-vendored
+.DS_Store linguist-vendored
+
+# Exclude build artifacts
+*.o linguist-vendored
+*.so linguist-vendored
+*.a linguist-vendored
+*.exe linguist-vendored
+bin/** linguist-vendored
+build/** linguist-vendored
+
+# Exclude other non-source files
+*.log linguist-vendored
+*.tmp linguist-vendored

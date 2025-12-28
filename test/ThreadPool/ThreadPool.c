@@ -114,12 +114,15 @@ void test_fuzzed_tasks(void) {
         ThreadPool_execute(&tp, delayed_task, &delays[i]);
     }
 
-    // wait for completion
-    usleep(200 * 1000);
+    // wait for all tasks to complete
+    while (atomic_load(&tp.pending_tasks) > 0)
+        sched_yield();
+
     test(atomic_load(&tp.pending_tasks) == 0);
     ThreadPool_shutdown(&tp);
     summary();
 }
+
 
 /* ============================================================
  * 5. Stress test
