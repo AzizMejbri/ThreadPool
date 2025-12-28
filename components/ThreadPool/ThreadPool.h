@@ -18,20 +18,32 @@
 typedef void *(*Task)(void *);
 typedef void *Args;
 
+#define TQ_EMPTY(thp)                                                          \
+  (atomic_load_explicit(&thp->pending_tasks, memory_order_acquire) == 0)
+
+#define IDLE_TIMEOUT_NS 1e9; // 1 second, adjust as needed
+
 typedef struct {
-  pthread_t *threads;
-  TaskQueue *taskQueue;
-  pthread_mutex_t sleep_mutex;
-  pthread_cond_t sleep_cond;
-  _Atomic(uint64_t) pending_tasks;
-  uint16_t thread_n;
-  bool exit_status;
-} ThreadPool;
+  void *master; // void* <== ThreadPool*
+  uint16_t id;
+} WorkerThreadArgs;
 
 typedef enum {
   THREADPOOL_CACHED = 0,
   THREADPOOL_STATIC = 1,
 } ThreadPoolType;
+
+typedef struct {
+  pthread_t *threads;
+  TaskQueue *taskQueue;
+  WorkerThreadArgs *wtas;
+  pthread_mutex_t sleep_mutex;
+  pthread_cond_t sleep_cond;
+  _Atomic(uint64_t) pending_tasks;
+  _Atomic(uint16_t) thread_n;
+  bool exit_status;
+  ThreadPoolType thp_type;
+} ThreadPool;
 
 void ThreadPool_init(ThreadPool *thp, unsigned int thread_num, int flags);
 bool ThreadPool_execute(ThreadPool *thp, Task task, Args args);
