@@ -7,72 +7,53 @@
 #include "../../utils/cores.h"
 #include "../../utils/timeout/timeout.h"
 
-// void ThreadPool_init(ThreadPool *thp, unsigned int thread_num, int flags);
-// void ThreadPool_execute(ThreadPool *thp, Task task, Args args);
-
-// ThreadPool thp;
-// ThreadPool_init(thp, 0, THREADPOOL_STATIC);
-// while(task_queue.size != 0){
-//  ThreadPool_execute(thp, task_queue.next, NULL);
-// }
-// ThreadPool_cleanup(thp);
-//
+#define TQ_EMPTY(thp)                                                          \
+  (atomic_load_explicit(&thp->pending_tasks, memory_order_acquire) == 0)
 
 typedef struct {
-  ThreadPool* master;
-  uint16_t    id;
+  ThreadPool *master;
+  uint16_t id;
 } WorkerThreadArgs;
 
 static inline void ThreadPoolStatic_init(ThreadPool *thp, unsigned int num);
 static inline void ThreadPoolCached_init(ThreadPool *thp);
 
-static void *thread_fn(void *_args) { 
-  WorkerThreadArgs *args ;
-  args = (WorkerThreadArgs*)_args;
+static void *thread_fn(void *_args) {
+  TQEntry e;
+  WorkerThreadArgs *args;
+  args = (WorkerThreadArgs *)_args;
 
 thread_work_wait:
-  // wait for a task, if it recieves a signal that a task is provided it executes it 
-
-  pthread_mutex_lock(args -> master -> available_task_mutex + args -> id);
-
-  while (args -> master -> tasks[args -> id] == NULL && !args -> master -> exit_status[args -> id])
-    pthread_cond_wait(args -> master -> available_task_cond + args -> id, args -> master ->available_task_mutex + args -> id); 
-
-  pthread_mutex_unlock(args -> master -> available_task_mutex + args -> id);
-
-  if (args -> master -> exit_status[args -> id])
+  // if it recieves an exit signal it exits, else it consumes a task if existing
+  // and executes it
+  pthread_mutex_lock(&args->master->sleep_mutex);
+  while (!args->master->exit_status && TQ_EMPTY(args->master)) {
+    pthread_cond_wait(&args->master->sleep_cond, &args->master->sleep_mutex);
+  }
+  if (args->master->exit_status)
     goto thread_work_exit;
- 
+  pthread_mutex_unlock(&args->master->sleep_mutex);
 
-  // thread does its task
+  // the work bulk, the thread consumes a task and executes it if it find one,
+  // else it goes back to waiting
+  e = TaskQueue_dequeue(args->master->taskQueue);
 
-  // executes its task
-  args -> master -> tasks[args -> id](args -> master -> args[args -> id]);
+  // for its task and start executing our proper task
+  if (!TQENTRY_EQ(e, NULL_ENTRY)) {
+    atomic_fetch_sub_explicit(&args->master->pending_tasks, 1,
+                              memory_order_release);
+    e.task(e.arg);
+  }
 
-  // got its task done, adds to read_threads_num and toggles its busy index to signal its free, signals that a change has happened
-  // to available_thread_cond for a blocking pool
-  pthread_mutex_lock(&args -> master -> available_thread_mutex);
-  pthread_mutex_lock(args -> master -> available_task_mutex + args -> id);
-  args -> master -> busy_status[args -> id] = false;
-  args -> master -> ready_tid_n ++;
-  args -> master -> tasks[args -> id] = NULL;
-  pthread_cond_broadcast(&args -> master -> available_thread_cond); 
-  pthread_mutex_unlock(args -> master -> available_task_mutex + args -> id);
-  pthread_mutex_unlock(&args -> master -> available_thread_mutex);
-
-  // now it sets its task to NULL, and waits until it is set otherwise
-
-  // an exception is if its exit_status is true, the thread is forced to exit after achieving its task if the exit_status is set
-  if ( args -> master -> exit_status[args -> id] )
-    goto thread_work_exit;
-
- 
-  // at this point we recieved a signal that the task is no long set to NULL, we go to thread_work_start to restart execution
+  // after executing our task, we go back to waiting for a task
   goto thread_work_wait;
 
+  // if the thread receives an exit signal, it frees resources and returns,
+  // preparing to be joined by the main thread
 thread_work_exit:
+  pthread_mutex_unlock(&args->master->sleep_mutex);
   free(args);
-  return NULL; 
+  return NULL;
 }
 
 void ThreadPool_init(ThreadPool *thp, unsigned int num, int flags) {
@@ -87,27 +68,18 @@ static inline void ThreadPoolStatic_init(ThreadPool *thp, unsigned int num) {
   if (num == 0)
     num = logical_cores_count();
 
-  thp->thread_n = num;
-  thp->ready_tid_n = num;
   thp->threads = malloc(sizeof(pthread_t) * num);
-  thp->tasks = calloc(num, sizeof(Task));
-  thp->args = calloc(num, sizeof(Args));
-  thp->busy_status = malloc(sizeof(bool) * num);
-  thp->exit_status = malloc(sizeof(bool) * num);
-  thp->available_task_mutex = malloc(sizeof(pthread_mutex_t) * num);
-  thp->available_task_cond = malloc(sizeof(pthread_cond_t) * num);
-  pthread_mutex_init(&thp -> available_thread_mutex, NULL);
-  pthread_cond_init(&thp -> available_thread_cond, NULL);
-  for(unsigned i = 0; i < num; i++){
-    thp -> busy_status[i] = false;
-    thp -> exit_status[i] = false;
-    pthread_mutex_init(thp -> available_task_mutex + i, NULL);
-    pthread_cond_init(thp -> available_task_cond + i, NULL);
-  }
+  thp->taskQueue = malloc(sizeof(TaskQueue));
+  TaskQueue_init(thp->taskQueue, 1024);
+  thp->thread_n = num;
+  thp->exit_status = false;
+  pthread_mutex_init(&thp->sleep_mutex, NULL);
+  pthread_cond_init(&thp->sleep_cond, NULL);
+  atomic_init(&thp->pending_tasks, 0);
   for (unsigned i = 0; i < num; i++) {
     WorkerThreadArgs *wta = malloc(sizeof(WorkerThreadArgs));
-    wta -> master = thp;
-    wta -> id = i;
+    wta->master = thp;
+    wta->id = i;
     pthread_create(thp->threads + i, NULL, thread_fn, wta);
   }
 }
@@ -117,67 +89,33 @@ static inline void ThreadPoolCached_init(ThreadPool *thp) {
   ThreadPoolStatic_init(thp, 0);
 }
 
-
-static inline int32_t poll_threads(bool *busy_status, uint16_t n){
-  for(uint16_t i = 0; i < n; i++)
-    if ( !busy_status[i] )
-      return i;
-  return -1; 
-}
-void ThreadPool_execute(ThreadPool *thp, Task task, Args args){
-  int32_t poll_threads_out;
-  // we poll the threads to see if any is available 
-  pthread_mutex_lock(&thp -> available_thread_mutex);
-repoll:
-  while (thp->ready_tid_n == 0) {
-    pthread_cond_wait(&thp->available_thread_cond, &thp->available_thread_mutex);
+bool ThreadPool_execute(ThreadPool *thp, Task task, Args args) {
+  if (thp == NULL || thp->exit_status) {
+    return false;
   }
-  poll_threads_out = poll_threads(thp -> busy_status, thp -> thread_n);
+  // lock the task queue mutex and notify all active_workers threads about the
+  // addition
+  atomic_fetch_add_explicit(&thp->pending_tasks, 1, memory_order_release);
+  TaskQueue_enqueue(thp->taskQueue, (TQEntry){task, args});
 
-  // if no thread is available, we go back to polling
-  if ( poll_threads_out == -1) 
-    goto repoll;
-
-  //  a thread was available and returned by poll_threads, we assign to it a task and pass to it its args 
-  // in their corresponding fields
-  uint16_t tid = (uint16_t) poll_threads_out;
-  
-  thp->busy_status[tid] = true;
-  thp->ready_tid_n--;
-  pthread_mutex_unlock(&thp -> available_thread_mutex);
-
-  // we acquire the mutex to write into the cond and broadcast that a new taks for thread[tid] is available
-  pthread_mutex_lock(thp -> available_task_mutex + tid);
-  thp -> tasks[tid] = task;
-  thp -> args[tid] = args;
-  pthread_cond_broadcast(thp -> available_task_cond + tid);
-  pthread_mutex_unlock(thp -> available_task_mutex + tid); 
+  pthread_mutex_lock(&thp->sleep_mutex);
+  pthread_cond_signal(&thp->sleep_cond);
+  pthread_mutex_unlock(&thp->sleep_mutex);
+  return true;
 }
 
 void ThreadPool_shutdown(ThreadPool *thp) {
-
-  for (unsigned i = 0; i < thp -> thread_n; i++){
-    pthread_mutex_lock(thp -> available_task_mutex + i);
-    thp -> exit_status[i] = true;
-    pthread_cond_broadcast(thp -> available_task_cond + i);
-    pthread_mutex_unlock(thp -> available_task_mutex + i);
-  }
+  pthread_mutex_lock(&thp->sleep_mutex);
+  thp->exit_status = true;
+  pthread_cond_broadcast(&thp->sleep_cond);
+  pthread_mutex_unlock(&thp->sleep_mutex);
   for (unsigned i = 0; i < thp->thread_n; i++) {
     pthread_join(thp->threads[i], NULL);
-    // TODO: implement timeouts so that the shutting down of the threadpool doesnt wait forever for a thread
-    //       to work
-    wait_timeout(60);
   }
 
+  pthread_mutex_destroy(&thp->sleep_mutex);
+  pthread_cond_destroy(&thp->sleep_cond);
+  TaskQueue_destroy(thp->taskQueue);
+  free(thp->taskQueue);
   free(thp->threads);
-  free(thp->tasks);
-  free(thp->args);
-  free(thp->busy_status);
-  free(thp->exit_status);
-  thp -> thread_n = 0;
-  pthread_mutex_destroy(&thp -> available_thread_mutex);
-  pthread_cond_destroy(&thp -> available_thread_cond);
-  free(thp->available_task_mutex);
-  free(thp->available_task_cond);
-
 }

@@ -1,24 +1,33 @@
+
 #ifndef TASK_QUEUE_H
 #define TASK_QUEUE_H
 
-
 /**
- * @brief Thread Safety
- * @note This implementation is NOT thread-safe. For concurrent access,
- *       external synchronization must be used.
- * 
- * @brief Memory Management
- * @note The queue dynamically resizes when 75% full. Memory is allocated
- *       in powers of two for efficient modulo operations.
- * 
- * @brief Error Handling
- * @warning Memory allocation failures are not fully handled. In production
- *          environments, consider adding error return codes.
+ * @file task_queue.h
+ * @brief Lock-free multi-producer multi-consumer task queue
+ *
+ * @thread_safety
+ * - Fully lock-free
+ * - Supports multiple producers and multiple consumers (MPMC)
+ * - Uses C11 atomics
+ * - No mutexes or blocking synchronization
+ *
+ * @memory_model
+ * - Enqueue uses release semantics
+ * - Dequeue uses acquire semantics
+ * - Linearizable enqueue/dequeue
+ *
+ * @warning
+ * - TaskQueue_peek() is NOT linearizable with dequeue
+ * - Peek must only be used for debugging or heuristics
  */
 
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
+
+#include "../../lib/arena/components/arena.h"
 
 typedef void *(*Task)(void *);
 typedef void *Arg;
@@ -29,119 +38,60 @@ typedef struct {
 } TQEntry;
 
 #define NULL_ENTRY ((TQEntry){NULL, NULL})
+#define TQENTRY_EQ(a, b) ((a).task == (b).task && (a).arg == (b).arg)
 
-#define TQENTRY_EQ(entry1, entry2)                                             \
-  (entry1.task == entry2.task && entry1.arg == entry2.arg)
+/* Internal node (Michael–Scott queue) */
+typedef struct TQNode {
+  TQEntry entry;
+  _Atomic(struct TQNode *) next;
+} TQNode;
 
+/**
+ * @brief Lock-free task queue
+ */
 typedef struct {
-  uint64_t head;
-  uint64_t tail;
-  uint64_t size;
-  uint64_t capacity;
-  TQEntry *entries;
+  Arena arena;
+  _Atomic(TQNode *) head;
+  _Atomic(TQNode *) tail;
 } TaskQueue;
 
-// NOTE:
-// default capacity 64 so that it allows a minor optimization:
-// head <- (head + 1) % capacity => head <- (head + 1) & (capacity - 1)
-// make sure init_cap = 2^x where x \in IN
-
 /**
- * @brief Initialize a new task queue with specified capacity
+ * @brief Initialize a lock-free task queue
  *
- * @param init_cap Initial capacity of the queue (must be power of 2).
- *                 If 0 is provided, defaults to 64.
- * @return TaskQueue* Pointer to the newly created task queue, or NULL on
- * failure
+ * @param tq          Queue instance
+ * @param arena_size  Arena size in bytes (0 = heap fallback)
  *
- * @note The implementation uses a circular buffer with power-of-two capacity
- *       to enable efficient modulo operations using bitwise AND.
- *       Initial capacity defaults to 64 (2^6) to allow the optimization:
- *       head = (head + 1) & (capacity - 1) instead of head = (head + 1) %
- * capacity
- *
- * @warning Always ensure init_cap is a power of two for correct operation
- * @warning The caller is responsible for calling TaskQueue_destroy() to free
- * resources
+ * @return true on success
  */
-TaskQueue *TaskQueue_init(uint64_t init_cap);
+bool TaskQueue_init(TaskQueue *tq, uint64_t arena_size);
 
 /**
- * @brief Check if the task queue is empty
- *
- * @param tq Pointer to the task queue
- * @return bool true if queue is empty, false otherwise
- *
- * @note This function provides O(1) constant time check
- * @warning tq must not be NULL
+ * @brief Enqueue a task (lock-free, linearizable)
  */
-bool TaskQueue_isempty(TaskQueue *tq);
+bool TaskQueue_enqueue(TaskQueue *tq, TQEntry entry);
 
 /**
- * @brief Get the current number of tasks in the queue
+ * @brief Dequeue a task (lock-free, linearizable)
  *
- * @param tq Pointer to the task queue
- * @return uint64_t Number of tasks currently in the queue
- *
- * @note This function provides O(1) constant time access
- * @warning tq must not be NULL
- */
-uint64_t TaskQueue_size(TaskQueue *tq);
-
-/**
- * @brief Peek at the front task without removing it
- *
- * @param tq Pointer to the task queue
- * @return Task The task at the front of the queue,
- *          or NULL if queue is empty
- *
- * @note This function provides O(1) constant time access
- * @note Always check if queue is empty using TaskQueue_isempty() before calling
- *       to avoid unnecessary NULL checks
- * @warning tq must not be NULL
- */
-TQEntry TaskQueue_peek(TaskQueue *tq);
-
-/**
- * @brief Add a task to the end of the queue
- *
- * @param tq Pointer to the task queue
- * @param t Task to enqueue and its arguments
- * @return returns true if the enqueing was successful and false otherwise
- *
- * @note Automatically resizes the queue when it reaches 75% capacity
- * @note The resize doubles the current capacity
- * @note This function provides amortized O(1) time complexity
- * @warning tq must not be NULL
- */
-bool TaskQueue_enqueue(TaskQueue *tq, TQEntry t);
-
-/**
- * @brief Remove and return the task from the front of the queue
- *
- * @param tq Pointer to the task queue
- * @return Task The task removed from the front,
- *          or NULL if queue is empty
- *
- * @note This function provides O(1) constant time access
- * @note Always check if queue is empty using TaskQueue_isempty() before calling
- *       to avoid unnecessary NULL checks
- * @warning tq must not be NULL
+ * @return NULL_ENTRY if queue is empty
  */
 TQEntry TaskQueue_dequeue(TaskQueue *tq);
 
 /**
- * @brief Destroy the task queue and free all allocated memory
+ * @brief Peek front element (NOT linearizable)
+ */
+TQEntry TaskQueue_peek(TaskQueue *tq);
+
+/**
+ * @brief Destroy queue and release arena
  *
- * @param tq Pointer to the task queue to destroy
- *
- * @note This function frees both the task array and the queue structure itself
- * @warning After calling this function, the queue pointer becomes invalid
- * @warning This function does not free individual tasks stored in the queue
- * @warning tq must not be NULL
+ * @warning Must be called after all threads stop using the queue
  */
 void TaskQueue_destroy(TaskQueue *tq);
 
+/**
+ * @brief Debug print (non-thread-safe)
+ */
 void TaskQueue_dbg(TaskQueue *tq);
 
 #endif

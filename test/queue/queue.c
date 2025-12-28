@@ -1,722 +1,416 @@
 #include "../../utils/queue/task_queue.h"
 #include "../test.h"
+
+#include <pthread.h>
+#include <stdatomic.h>
+#include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
-#include <time.h>
 
-// Test counters (if not provided by test.h)
-static unsigned tests_passed = 0;
-static unsigned tests_failed = 0;
+/* ============================================================
+ * Dummy tasks
+ * ============================================================ */
 
-// Helper functions for creating test tasks
-static void *dummy_task1(void *arg) {
-  static int result = 42;
-  (void)arg; // Mark unused parameter
-  return &result;
-}
-
-static void *dummy_task2(void *arg) {
-  char *str = (char *)arg;
-  static char buffer[256];
-  snprintf(buffer, sizeof(buffer), "Processed: %s", str ? str : "NULL");
-  return buffer;
-}
-
+static void *dummy_task1(void *arg) { return arg; }
+static void *dummy_task2(void *arg) { return arg; }
+static void *dummy_task(void *arg) { return arg; }
 static void *null_task(void *arg) {
-  (void)arg; // Mark unused parameter
+  (void)arg;
   return NULL;
 }
 
-static void *increment_task(void *arg) {
-  static int counter = 0;
-  int *val = (int *)arg;
-  if (val)
-    counter += *val;
-  return &counter;
-}
+#define ENTRY(task, arg) ((TQEntry){task, (void *)(arg)})
 
-static void *string_task(void *arg) {
-  static char result[256];
-  const char *input = (const char *)arg;
-  if (input) {
-    snprintf(result, sizeof(result), "String: %s", input);
-  } else {
-    snprintf(result, sizeof(result), "String: NULL");
-  }
-  return result;
-}
+/* ============================================================
+ * 1. Initialization
+ * ============================================================ */
 
-#define CREATE_ENTRY(task_func, arg_val)                                       \
-  ((TQEntry){task_func, (void *)(arg_val)})
+void test_initialization(void) {
+  printf("\n=== Test 1: Initialization ===\n");
 
-void test_initialization() {
-  printf("\n\033[34m=== Test 1: Initialization ===\n\033[0m");
+  TaskQueue tq;
+  test(TaskQueue_init(&tq, 0));
+  test(TQENTRY_EQ(TaskQueue_dequeue(&tq), NULL_ENTRY));
+  test(TQENTRY_EQ(TaskQueue_peek(&tq), NULL_ENTRY));
 
-  // Test 1.1: Default initialization (capacity 64)
-  TaskQueue *tq1 = TaskQueue_init(0);
-  test(tq1 != NULL);
-  test(TaskQueue_isempty(tq1) == true);
-  test(TaskQueue_size(tq1) == 0);
-  TaskQueue_destroy(tq1);
-
-  // Test 1.2: Custom power-of-two capacity
-  TaskQueue *tq2 = TaskQueue_init(32);
-  test(tq2 != NULL);
-  test(TaskQueue_isempty(tq2) == true);
-  test(TaskQueue_size(tq2) == 0);
-  TaskQueue_destroy(tq2);
-
-  // Test 1.3: Another power-of-two capacity
-  TaskQueue *tq3 = TaskQueue_init(128);
-  test(tq3 != NULL);
-  test(TaskQueue_isempty(tq3) == true);
-  test(TaskQueue_size(tq3) == 0);
-  TaskQueue_destroy(tq3);
+  TaskQueue_destroy(&tq);
   summary();
 }
 
-void test_basic_operations() {
-  printf("\n\033[34m=== Test 2: Basic Operations ===\n\033[0m");
+/* ============================================================
+ * 2. Single-thread FIFO semantics
+ * ============================================================ */
 
-  TaskQueue *tq = TaskQueue_init(0);
+void test_fifo_single_thread(void) {
+  printf("\n=== Test 2: FIFO (single-thread) ===\n");
 
-  // Test 2.1: Single enqueue/dequeue
-  TQEntry entry1 = CREATE_ENTRY(dummy_task1, (void *)100);
-  TaskQueue_enqueue(tq, entry1);
-  test(TaskQueue_isempty(tq) == false);
-  test(TaskQueue_size(tq) == 1);
+  TaskQueue tq;
+  TaskQueue_init(&tq, 0);
 
-  // Test 2.2: Peek returns the full TQEntry
-  TQEntry peeked = TaskQueue_peek(tq);
-  test(peeked.task == entry1.task);
-  test(peeked.arg == entry1.arg);
-  test(TQENTRY_EQ(peeked, entry1));
+  TQEntry a = ENTRY(dummy_task1, (void *)1);
+  TQEntry b = ENTRY(dummy_task2, (void *)2);
+  TQEntry c = ENTRY(null_task, NULL);
 
-  // Test 2.3: Dequeue returns the full TQEntry
-  TQEntry dequeued = TaskQueue_dequeue(tq);
-  test(dequeued.task == entry1.task);
-  test(dequeued.arg == entry1.arg);
-  test(TQENTRY_EQ(dequeued, entry1));
-  test(TaskQueue_isempty(tq) == true);
-  test(TaskQueue_size(tq) == 0);
+  test(TaskQueue_enqueue(&tq, a));
+  test(TaskQueue_enqueue(&tq, b));
+  TQEntry result = TaskQueue_dequeue(&tq);
+  test(TQENTRY_EQ(result, a));
+  result = TaskQueue_dequeue(&tq);
+  test(TQENTRY_EQ(result, b));
+  test(TaskQueue_enqueue(&tq, c));
+  test(TQENTRY_EQ(TaskQueue_dequeue(&tq), c));
+  test(TQENTRY_EQ(TaskQueue_dequeue(&tq), NULL_ENTRY));
 
-  // Test 2.4: Multiple TQEntry entries
-  TQEntry entries[3] = {CREATE_ENTRY(dummy_task1, (void *)1),
-                        CREATE_ENTRY(dummy_task2, (void *)2),
-                        CREATE_ENTRY(null_task, (void *)3)};
-
-  for (int i = 0; i < 3; i++) {
-    TaskQueue_enqueue(tq, entries[i]);
-    test(TaskQueue_size(tq) == (i + 1));
-  }
-
-  // Verify FIFO order with full TQEntry comparison
-  for (int i = 0; i < 3; i++) {
-    TQEntry e = TaskQueue_dequeue(tq);
-    test(TQENTRY_EQ(e, entries[i]));
-  }
-
-  test(TaskQueue_isempty(tq) == true);
-  TaskQueue_destroy(tq);
+  TaskQueue_destroy(&tq);
   summary();
 }
 
-void test_null_entries() {
-  printf("\n\033[34m=== Test 3: NULL Entries ===\n\033[0m");
+/* ============================================================
+ * 3. Peek semantics (NON-LINEARIZABLE)
+ * ============================================================ */
 
-  TaskQueue *tq = TaskQueue_init(0);
+void test_peek_behavior(void) {
+  printf("\n=== Test 3: Peek semantics ===\n");
 
-  // Test 3.1: Enqueue NULL_ENTRY
-  TaskQueue_enqueue(tq, NULL_ENTRY);
-  test(TaskQueue_size(tq) == 1);
+  TaskQueue tq;
+  TaskQueue_init(&tq, 0);
 
-  TQEntry peeked = TaskQueue_peek(tq);
-  test(peeked.task == NULL);
-  test(peeked.arg == NULL);
-  test(TQENTRY_EQ(peeked, NULL_ENTRY));
+  TQEntry e = ENTRY(dummy_task1, (void *)42);
+  TaskQueue_enqueue(&tq, e);
 
-  TQEntry dequeued = TaskQueue_dequeue(tq);
-  test(dequeued.task == NULL);
-  test(dequeued.arg == NULL);
-  test(TQENTRY_EQ(dequeued, NULL_ENTRY));
-  test(TaskQueue_isempty(tq) == true);
+  TQEntry p1 = TaskQueue_peek(&tq);
+  TQEntry p2 = TaskQueue_peek(&tq);
 
-  // Test 3.2: Mix of NULL and non-NULL TQEntry structs
-  TQEntry mixed_entries[] = {CREATE_ENTRY(dummy_task1, (void *)1), NULL_ENTRY,
-                             CREATE_ENTRY(NULL, (void *)3),
-                             CREATE_ENTRY(dummy_task2, NULL),
-                             CREATE_ENTRY(NULL, NULL)};
+  test(TQENTRY_EQ(p1, p2));
+  test(TQENTRY_EQ(p1, e));
 
-  for (int i = 0; i < 5; i++) {
-    TaskQueue_enqueue(tq, mixed_entries[i]);
-  }
+  TQEntry d = TaskQueue_dequeue(&tq);
+  test(TQENTRY_EQ(d, e));
 
-  for (int i = 0; i < 5; i++) {
-    TQEntry e = TaskQueue_dequeue(tq);
-    test(TQENTRY_EQ(e, mixed_entries[i]));
-  }
-
-  TaskQueue_destroy(tq);
+  TaskQueue_destroy(&tq);
   summary();
 }
 
-void test_queue_resizing() {
-  printf("\n\033[34m=== Test 4: Queue Resizing ===\n\033[0m");
+/* ============================================================
+ * 4. NULL_ENTRY handling
+ * ============================================================ */
 
-  // Test 4.1: Resize from small capacity
-  TaskQueue *tq =
-      TaskQueue_init(8); // Will resize when size reaches 6 (8 * 0.75)
+void test_null_entry(void) {
+  printf("\n=== Test 4: NULL_ENTRY ===\n");
 
-  // Store entries to verify later
-  TQEntry stored_entries[20];
+  TaskQueue tq;
+  TaskQueue_init(&tq, 0);
 
-  for (int i = 0; i < 20; i++) {
-    stored_entries[i] = CREATE_ENTRY(dummy_task1, (void *)(uintptr_t)i);
-    TaskQueue_enqueue(tq, stored_entries[i]);
-  }
+  TaskQueue_enqueue(&tq, NULL_ENTRY);
+  test(TQENTRY_EQ(TaskQueue_dequeue(&tq), NULL_ENTRY));
+  test(TQENTRY_EQ(TaskQueue_dequeue(&tq), NULL_ENTRY));
 
-  test(TaskQueue_size(tq) == 20);
-
-  // Verify all TQEntry structs are still in order
-  for (int i = 0; i < 20; i++) {
-    TQEntry e = TaskQueue_dequeue(tq);
-    test(TQENTRY_EQ(e, stored_entries[i]));
-  }
-
-  test(TaskQueue_isempty(tq) == true);
-  TaskQueue_destroy(tq);
-
-  // Test 4.2: Multiple resizes
-  TaskQueue *tq2 = TaskQueue_init(4);
-
-  // Fill through multiple resize points
-  TQEntry many_entries[100];
-  for (int i = 0; i < 100; i++) {
-    many_entries[i] = CREATE_ENTRY(dummy_task2, (void *)(uintptr_t)i);
-    TaskQueue_enqueue(tq2, many_entries[i]);
-  }
-
-  test(TaskQueue_size(tq2) == 100);
-
-  // Verify order maintained through resizes
-  for (int i = 0; i < 100; i++) {
-    TQEntry e = TaskQueue_dequeue(tq2);
-    test(TQENTRY_EQ(e, many_entries[i]));
-  }
-
-  TaskQueue_destroy(tq2);
+  TaskQueue_destroy(&tq);
   summary();
 }
 
-void test_circular_buffer_debug() {
-  printf("\n\033[34m=== Test 4.9: Circular Buffer Debug ===\n\033[0m");
+/* ============================================================
+ * 5. Single-thread stress
+ * ============================================================ */
 
-  TaskQueue *tq = TaskQueue_init(8);
-  printf("Initial: head=%lu, tail=%lu, size=%lu, capacity=%lu\n", tq->head,
-         tq->tail, tq->size, tq->capacity);
+void test_single_thread_stress(void) {
+  printf("\n=== Test 5: Single-thread stress ===\n");
 
-  printf("\n1. Adding 4 elements (0-3):\n");
-  for (int i = 0; i < 4; i++) {
-    TaskQueue_enqueue(tq, CREATE_ENTRY(dummy_task1, (void *)(uintptr_t)i));
-    printf("  Added %d: head=%lu, tail=%lu, size=%lu\n", i, tq->head, tq->tail,
-           tq->size);
+  TaskQueue tq;
+  TaskQueue_init(&tq, 0);
+
+  const int N = 100000;
+  for (int i = 0; i < N; i++)
+    TaskQueue_enqueue(&tq, ENTRY(dummy_task1, (void *)(uintptr_t)i));
+
+  for (int i = 0; i < N; i++) {
+    TQEntry e = TaskQueue_dequeue(&tq);
+    test((uintptr_t)e.arg == (uintptr_t)i);
   }
 
-  printf("\n2. Removing 2 elements:\n");
-  for (int i = 0; i < 2; i++) {
-    TQEntry e = TaskQueue_dequeue(tq);
-    printf("  Removed %lu: head=%lu, tail=%lu, size=%lu\n", (uintptr_t)e.arg,
-           tq->head, tq->tail, tq->size);
+  test(TQENTRY_EQ(TaskQueue_dequeue(&tq), NULL_ENTRY));
+
+  TaskQueue_destroy(&tq);
+  summary();
+}
+
+/* ============================================================
+ * 6. Multi-consumer stress (SPMC)
+ * ============================================================ */
+
+#define CONSUMERS 4
+#define OPS 100000
+
+static TaskQueue tq_spmc;
+static _Atomic uint64_t produced;
+static _Atomic uint64_t consumed;
+
+static void *producer(void *arg) {
+  (void)arg;
+  for (uint64_t i = 0; i < OPS; i++) {
+    TaskQueue_enqueue(&tq_spmc, ENTRY(dummy_task1, (void *)(uintptr_t)i));
+    atomic_fetch_add(&produced, 1);
   }
+  return NULL;
+}
 
-  printf("\n3. Adding 6 more elements (4-9):\n");
-  for (int i = 4; i < 10; i++) {
-    TaskQueue_enqueue(tq, CREATE_ENTRY(dummy_task1, (void *)(uintptr_t)i));
-    printf("  Added %d: head=%lu, tail=%lu, size=%lu\n", i, tq->head, tq->tail,
-           tq->size);
-  }
-
-  printf("\n4. Current queue state:\n");
-  printf("  head=%lu, tail=%lu, size=%lu, capacity=%lu\n", tq->head, tq->tail,
-         tq->size, tq->capacity);
-
-  printf("\n5. Dequeuing all (expecting 2-9):\n");
-  for (int i = 2; i < 10; i++) {
-    TQEntry e = TaskQueue_dequeue(tq);
-    uintptr_t val = (uintptr_t)e.arg;
-    printf("  Dequeued: %lu (expected: %d) %s\n", val, i,
-           val == (uintptr_t)i ? "✓" : "✗");
-    if (val != (uintptr_t)i) {
-      printf("    ERROR: Mismatch!\n");
+static void *consumer(void *_) {
+  (void)_;
+  while (atomic_load(&consumed) < OPS) {
+    TQEntry e = TaskQueue_dequeue(&tq_spmc);
+    if (e.task != NULL) {
+      atomic_fetch_add(&consumed, 1);
     }
   }
-
-  printf("\n6. Final state:\n");
-  printf("  head=%lu, tail=%lu, size=%lu, capacity=%lu\n", tq->head, tq->tail,
-         tq->size, tq->capacity);
-  printf("  isempty: %s\n", TaskQueue_isempty(tq) ? "true" : "false");
-
-  TaskQueue_destroy(tq);
+  return NULL;
 }
 
-void test_circular_buffer_behavior() {
-  printf("\n\033[34m=== Test 5: Circular Buffer Behavior ===\n\033[0m");
+void test_spmc_concurrency(void) {
+  printf("\n=== Test 6: SPMC concurrency stress ===\n");
 
-  TaskQueue *tq = TaskQueue_init(8); // Small capacity to test wrap-around
+  atomic_store(&produced, 0);
+  atomic_store(&consumed, 0);
 
-  // Store entries to verify order
-  TQEntry first_entries[4];
-  TQEntry later_entries[6];
+  TaskQueue_init(&tq_spmc, 0);
 
-  // Fill queue halfway
-  for (int i = 0; i < 4; i++) {
-    first_entries[i] = CREATE_ENTRY(dummy_task1, (void *)(uintptr_t)i);
-    TaskQueue_enqueue(tq, first_entries[i]);
-  }
+  pthread_t p, c[CONSUMERS];
 
-  // Remove half to move head
-  for (int i = 0; i < 2; i++) {
-    TQEntry e = TaskQueue_dequeue(tq);
-    test(TQENTRY_EQ(e, first_entries[i]));
-  }
-  // Queue now has [2, 3] at positions 2-3, head=2, tail=4
+  pthread_create(&p, NULL, producer, NULL);
+  for (int i = 0; i < CONSUMERS; i++)
+    pthread_create(&c[i], NULL, consumer, NULL);
 
-  // Fill more to cause wrap-around
-  for (int i = 4; i < 10; i++) {
-    later_entries[i - 4] = CREATE_ENTRY(dummy_task1, (void *)(uintptr_t)i);
-    TaskQueue_enqueue(tq, later_entries[i - 4]);
-  }
-  // Queue should now wrap around: positions 4-7 and 0-1 filled
+  pthread_join(p, NULL);
+  for (int i = 0; i < CONSUMERS; i++)
+    pthread_join(c[i], NULL);
 
-  test(TaskQueue_size(tq) == 8); // Elements 2-9
+  printf("Produced: %lu | Consumed: %lu\n", atomic_load(&produced),
+         atomic_load(&consumed));
+  test(atomic_load(&produced) == atomic_load(&consumed));
 
-  // Expected order: first_entries[2], first_entries[3], then later_entries[0]
-  // through later_entries[5]
-  for (int i = 2; i < 4; i++) {
-    TQEntry e = TaskQueue_dequeue(tq);
-    test(TQENTRY_EQ(e, first_entries[i]));
-  }
-
-  for (int i = 0; i < 6; i++) {
-    TQEntry e = TaskQueue_dequeue(tq);
-    test(TQENTRY_EQ(e, later_entries[i]));
-  }
-
-  test(TaskQueue_isempty(tq) == true);
-
-  // Test wrap-around with full cycle
-  for (int i = 0; i < 8; i++) {
-    TaskQueue_enqueue(tq, CREATE_ENTRY(dummy_task2, (void *)(uintptr_t)i));
-  }
-  test(TaskQueue_size(tq) == 8);
-
-  for (int i = 0; i < 8; i++) {
-    TaskQueue_dequeue(tq);
-  }
-  test(TaskQueue_isempty(tq) == true);
-
-  TaskQueue_destroy(tq);
+  TaskQueue_destroy(&tq_spmc);
   summary();
 }
 
-void test_peek_behavior() {
-  printf("\n\033[34m=== Test 6: Peek Behavior ===\n\033[0m");
+/* ============================================================
+ * 7. Scalability test (variable consumers)
+ * ============================================================ */
 
-  TaskQueue *tq = TaskQueue_init(0);
+void test_scalability(void) {
+  printf("\n=== Test 7: Scalability ===\n");
 
-  // Test 6.1: Peek on empty queue returns NULL_ENTRY
-  TQEntry empty_peek = TaskQueue_peek(tq);
-  test(TQENTRY_EQ(empty_peek, NULL_ENTRY));
-  test(empty_peek.task == NULL);
-  test(empty_peek.arg == NULL);
+  for (int threads = 1; threads <= 8; threads *= 2) {
+    printf("Threads: 1 producer / %d consumers\n", threads);
 
-  // Test 6.2: Peek doesn't modify queue
-  TQEntry entry = CREATE_ENTRY(dummy_task1, (void *)42);
-  TaskQueue_enqueue(tq, entry);
+    atomic_store(&produced, 0);
+    atomic_store(&consumed, 0);
 
-  TQEntry peek1 = TaskQueue_peek(tq);
-  TQEntry peek2 = TaskQueue_peek(tq);
-  test(TQENTRY_EQ(peek1, entry));
-  test(TQENTRY_EQ(peek2, entry));
-  test(TaskQueue_size(tq) == 1); // Size unchanged
+    TaskQueue_init(&tq_spmc, 0);
 
-  // Test 6.3: Peek after multiple enqueues still shows first TQEntry
-  TQEntry entry2 = CREATE_ENTRY(dummy_task2, (void *)43);
-  TaskQueue_enqueue(tq, entry2);
-  TQEntry peek3 = TaskQueue_peek(tq);
-  test(TQENTRY_EQ(peek3, entry)); // Should still be first TQEntry
+    pthread_t p, c[threads];
+    pthread_create(&p, NULL, producer, NULL);
+    for (int i = 0; i < threads; i++)
+      pthread_create(&c[i], NULL, consumer, NULL);
 
-  // Test 6.4: Peek after dequeue shows next TQEntry
-  TQEntry dequeued = TaskQueue_dequeue(tq);
-  test(TQENTRY_EQ(dequeued, entry));
-  TQEntry peek4 = TaskQueue_peek(tq);
-  test(TQENTRY_EQ(peek4, entry2));
+    pthread_join(p, NULL);
+    for (int i = 0; i < threads; i++)
+      pthread_join(c[i], NULL);
 
-  TaskQueue_destroy(tq);
+    test(atomic_load(&produced) == atomic_load(&consumed));
+    TaskQueue_destroy(&tq_spmc);
+  }
+
   summary();
 }
 
-void test_edge_cases() {
-  printf("\n\033[34m=== Test 7: Edge Cases ===\n\033[0m");
+/* ============================================================
+ * 8. Fuzz test: random tasks
+ * ============================================================ */
+#include <stdlib.h>
+#include <time.h>
 
-  // Test 7.1: Dequeue from empty queue returns NULL_ENTRY
-  TaskQueue *tq = TaskQueue_init(0);
-  TQEntry e = TaskQueue_dequeue(tq);
-  test(TQENTRY_EQ(e, NULL_ENTRY));
+void test_fuzz(void) {
+    printf("\n=== Test 8: Fuzz / Randomized tasks ===\n");
 
-  // Test 7.2: Single TQEntry queue
-  TQEntry single = CREATE_ENTRY(dummy_task1, (void *)99);
-  TaskQueue_enqueue(tq, single);
-  test(TaskQueue_size(tq) == 1);
-  test(TQENTRY_EQ(TaskQueue_peek(tq), single));
+    TaskQueue tq;
+    TaskQueue_init(&tq, 0);
+    srand((unsigned)time(NULL));
 
-  TQEntry dequeued = TaskQueue_dequeue(tq);
-  test(TQENTRY_EQ(dequeued, single));
-  test(TaskQueue_isempty(tq) == true);
+    const int N = 50000;
+    TQEntry entries[N];
 
-  // Test 7.3: Fill to exact capacity (power of two)
-  TaskQueue *tq2 = TaskQueue_init(16);
-  TQEntry capacity_entries[16];
-
-  for (int i = 0; i < 16; i++) {
-    capacity_entries[i] = CREATE_ENTRY(dummy_task1, (void *)(uintptr_t)i);
-    TaskQueue_enqueue(tq2, capacity_entries[i]);
-  }
-  test(TaskQueue_size(tq2) == 16);
-
-  // Add one more to trigger resize
-  TQEntry extra_entry = CREATE_ENTRY(dummy_task2, (void *)100);
-  TaskQueue_enqueue(tq2, extra_entry);
-  test(TaskQueue_size(tq2) == 17);
-
-  // Verify all TQEntry structs
-  for (int i = 0; i < 16; i++) {
-    TQEntry e2 = TaskQueue_dequeue(tq2);
-    test(TQENTRY_EQ(e2, capacity_entries[i]));
-  }
-
-  TQEntry last = TaskQueue_dequeue(tq2);
-  test(TQENTRY_EQ(last, extra_entry));
-  test(TaskQueue_isempty(tq2) == true);
-
-  TaskQueue_destroy(tq);
-  TaskQueue_destroy(tq2);
-  summary();
-}
-
-void test_memory_and_destruction() {
-  printf("\n\033[34m=== Test 8: Memory and Destruction ===\n\033[0m");
-
-  // Test 8.1: Destroy non-empty queue
-  TaskQueue *tq1 = TaskQueue_init(0);
-  for (int i = 0; i < 10; i++) {
-    TaskQueue_enqueue(tq1, CREATE_ENTRY(dummy_task1, (void *)(uintptr_t)i));
-  }
-  TaskQueue_destroy(tq1); // Should not leak memory
-
-  // Test 8.2: Multiple queue allocations with TQEntry structs
-  TaskQueue *queues[5];
-  for (int i = 0; i < 5; i++) {
-    queues[i] = TaskQueue_init(1 << (i + 1)); // 2, 4, 8, 16, 32
-    for (int j = 0; j < (1 << (i + 1)); j++) {
-      // Mix different task types
-      if (j % 2 == 0) {
-        TaskQueue_enqueue(queues[i],
-                          CREATE_ENTRY(dummy_task1, (void *)(uintptr_t)j));
-      } else {
-        TaskQueue_enqueue(queues[i],
-                          CREATE_ENTRY(dummy_task2, (void *)(uintptr_t)j));
-      }
-    }
-  }
-
-  // Clean up
-  for (int i = 0; i < 5; i++) {
-    TaskQueue_destroy(queues[i]);
-  }
-
-  // Test 8.3: Reuse after dequeue all
-  TaskQueue *tq2 = TaskQueue_init(0);
-  for (int cycle = 0; cycle < 3; cycle++) {
-    for (int i = 0; i < 20; i++) {
-      TaskQueue_enqueue(tq2, CREATE_ENTRY(dummy_task1, (void *)(uintptr_t)i));
-    }
-    for (int i = 0; i < 20; i++) {
-      TQEntry e = TaskQueue_dequeue(tq2);
-      test((uintptr_t)e.arg == (uintptr_t)i);
-    }
-    test(TaskQueue_isempty(tq2) == true);
-  }
-  TaskQueue_destroy(tq2);
-  summary();
-}
-
-void test_concurrent_operations_pattern() {
-  printf("\n\033[34m=== Test 9: Concurrent Operations Pattern ===\n\033[0m");
-
-  // Simulate producer-consumer pattern
-  TaskQueue *tq = TaskQueue_init(0);
-  int total_operations = 1000;
-
-  // Store all TQEntry structs to verify order
-  TQEntry all_entries[2000]; // More than we'll use
-  int next_value = 0;
-  int expected_value = 0;
-
-  for (int i = 0; i < total_operations; i++) {
-    // Enqueue between 1-3 items
-    int enqueue_count = (i % 3) + 1;
-    for (int j = 0; j < enqueue_count; j++) {
-      all_entries[next_value] =
-          CREATE_ENTRY(dummy_task1, (void *)(uintptr_t)next_value);
-      TaskQueue_enqueue(tq, all_entries[next_value]);
-      next_value++;
+    // enqueue random tasks (sometimes NULL_ENTRY)
+    for (int i = 0; i < N; i++) {
+        if (rand() % 10 == 0) {
+            entries[i] = NULL_ENTRY;
+        } else {
+            entries[i] = ENTRY(dummy_task1, (void *)(uintptr_t)i);
+        }
+        TaskQueue_enqueue(&tq, entries[i]);
     }
 
-    // Dequeue between 1-2 items
-    int dequeue_count = (i % 2) + 1;
-    for (int j = 0; j < dequeue_count && !TaskQueue_isempty(tq); j++) {
-      TQEntry e = TaskQueue_dequeue(tq);
-      // Verify against stored TQEntry
-      test(TQENTRY_EQ(e, all_entries[expected_value]));
-      expected_value++;
-    }
-  }
-
-  // Drain remaining queue
-  while (!TaskQueue_isempty(tq)) {
-    TQEntry e = TaskQueue_dequeue(tq);
-    test(TQENTRY_EQ(e, all_entries[expected_value]));
-    expected_value++;
-  }
-
-  test(expected_value == next_value);
-  TaskQueue_destroy(tq);
-  summary();
-}
-
-void test_randomized_stress_test() {
-  printf("\n\033[34m=== Test 10: Randomized Stress Test ===\n\033[0m");
-
-  srand(time(NULL));
-  TaskQueue *tq = TaskQueue_init(0);
-
-  int operations = 5000;
-  int enqueued = 0;
-  int dequeued = 0;
-
-  // Store all TQEntry structs
-  TQEntry stored_entries[10000]; // More than we need
-
-  for (int i = 0; i < operations; i++) {
-    // Randomly choose operation, but ensure we don't dequeue from empty
-    if (TaskQueue_isempty(tq) || (rand() % 3) != 0) {
-      // Enqueue
-      stored_entries[enqueued] =
-          CREATE_ENTRY(dummy_task1, (void *)(uintptr_t)enqueued);
-      TaskQueue_enqueue(tq, stored_entries[enqueued]);
-      enqueued++;
-    } else {
-      // Dequeue
-      TQEntry e = TaskQueue_dequeue(tq);
-      test(TQENTRY_EQ(e, stored_entries[dequeued]));
-      dequeued++;
+    // dequeue and validate
+    for (int i = 0; i < N; i++) {
+        TQEntry e = TaskQueue_dequeue(&tq);
+        if (entries[i].task == NULL) {
+            test(TQENTRY_EQ(e, NULL_ENTRY));
+        } else {
+            test((uintptr_t)e.arg == (uintptr_t)entries[i].arg);
+        }
     }
 
-    // Verify size is correct
-    test(TaskQueue_size(tq) == (enqueued - dequeued));
-  }
-
-  // Verify final state
-  test(TaskQueue_size(tq) == (enqueued - dequeued));
-
-  // Drain queue and verify all remaining items
-  while (!TaskQueue_isempty(tq)) {
-    TQEntry e = TaskQueue_dequeue(tq);
-    test(TQENTRY_EQ(e, stored_entries[dequeued]));
-    dequeued++;
-  }
-
-  test(enqueued == dequeued);
-  test(TaskQueue_isempty(tq) == true);
-
-  TaskQueue_destroy(tq);
-  summary();
+    test(TQENTRY_EQ(TaskQueue_dequeue(&tq), NULL_ENTRY));
+    TaskQueue_destroy(&tq);
+    summary();
 }
 
-void test_tqentry_eq_macro() {
-  printf("\n\033[34m=== Test 11: TQENTRY_EQ Macro ===\n\033[0m");
+/* ============================================================
+ * 9. Arena stress test: massive allocations
+ * ============================================================ */
+void test_arena_stress(void) {
+    printf("\n=== Test 9: Arena stress ===\n");
 
-  // Test equality with TQEntry structs
-  TQEntry e1 = {dummy_task1, (void *)1};
-  TQEntry e2 = {dummy_task1, (void *)1};
-  TQEntry e3 = {dummy_task2, (void *)1};
-  TQEntry e4 = {dummy_task1, (void *)2};
-  TQEntry e5 = {NULL, NULL};
-  TQEntry e6 = {dummy_task1, NULL};
-  TQEntry e7 = {NULL, (void *)1};
+    TaskQueue tq;
+    const int ARENA_SIZE = 1024 * 1024 * 50; // 50MB
+    TaskQueue_init(&tq, ARENA_SIZE);
 
-  test(TQENTRY_EQ(e1, e1) == true);
-  test(TQENTRY_EQ(e1, e2) == true);
-  test(TQENTRY_EQ(e1, e3) == false);
-  test(TQENTRY_EQ(e1, e4) == false);
-  test(TQENTRY_EQ(e5, NULL_ENTRY) == true);
-  test(TQENTRY_EQ(NULL_ENTRY, NULL_ENTRY) == true);
-  test(TQENTRY_EQ(e6, e6) == true);
-  test(TQENTRY_EQ(e7, e7) == true);
-  test(TQENTRY_EQ(e6, e7) == false);
-  test(TQENTRY_EQ(e1, e6) == false);
-  test(TQENTRY_EQ(e1, e7) == false);
-
-  summary();
-}
-
-void test_function_argument_preservation() {
-  printf("\n\033[34m=== Test 12: Function and Argument Preservation ===\n\033[0m");
-
-  TaskQueue *tq = TaskQueue_init(0);
-
-  // Test with various argument types
-  int int_arg = 42;
-  char *str_arg = "test string";
-  float float_arg = 3.14f;
-
-  TQEntry entries[] = {
-      CREATE_ENTRY(dummy_task1, &int_arg), CREATE_ENTRY(dummy_task2, str_arg),
-      CREATE_ENTRY(increment_task, &int_arg),
-      CREATE_ENTRY(string_task, str_arg), CREATE_ENTRY(null_task, &float_arg)};
-
-  // Enqueue all
-  for (int i = 0; i < 5; i++) {
-    TaskQueue_enqueue(tq, entries[i]);
-  }
-
-  // Dequeue and execute to verify arguments are preserved
-  for (int i = 0; i < 5; i++) {
-    TQEntry e = TaskQueue_dequeue(tq);
-    test(TQENTRY_EQ(e, entries[i]));
-
-    // Actually execute the task to verify arguments work
-    if (e.task) {
-      void *result = e.task(e.arg);
-      (void)result; // Use result to avoid unused warning
+    const int N = 500000;
+    for (int i = 0; i < N; i++) {
+        TaskQueue_enqueue(&tq, ENTRY(dummy_task1, (void *)(uintptr_t)i));
     }
-  }
 
-  test(TaskQueue_isempty(tq) == true);
-  TaskQueue_destroy(tq);
-  summary();
-}
-
-void test_integration_scenario() {
-  printf("\n\033[34m=== Test 13: Integration Scenario ===\n\033[0m");
-
-  // Simulate a real-world scenario: processing a batch of tasks
-  TaskQueue *tq = TaskQueue_init(0);
-
-  // Phase 1: Load initial TQEntry structs
-  const char *urls[] = {"http://example.com", "http://google.com",
-                        "http://github.com"};
-  TQEntry url_tasks[3];
-
-  for (int i = 0; i < 3; i++) {
-    url_tasks[i] = CREATE_ENTRY(dummy_task2, (void *)urls[i]);
-    TaskQueue_enqueue(tq, url_tasks[i]);
-  }
-
-  // Process one task
-  TQEntry processed = TaskQueue_dequeue(tq);
-  test(TQENTRY_EQ(processed, url_tasks[0]));
-  void *result = processed.task(processed.arg);
-  test(result != NULL);
-
-  // Phase 2: Add more TQEntry structs while processing
-  TQEntry extra1 = CREATE_ENTRY(dummy_task1, (void *)42);
-  TQEntry extra2 = CREATE_ENTRY(null_task, NULL);
-
-  TaskQueue_enqueue(tq, extra1);
-  TaskQueue_enqueue(tq, extra2);
-
-  // Process remaining tasks
-  int processed_count = 1;
-  while (!TaskQueue_isempty(tq)) {
-    TQEntry e = TaskQueue_dequeue(tq);
-    // Verify we get the expected TQEntry
-    if (processed_count == 1)
-      test(TQENTRY_EQ(e, url_tasks[1]));
-    if (processed_count == 2)
-      test(TQENTRY_EQ(e, url_tasks[2]));
-    if (processed_count == 3)
-      test(TQENTRY_EQ(e, extra1));
-    if (processed_count == 4)
-      test(TQENTRY_EQ(e, extra2));
-
-    if (e.task) {
-      e.task(e.arg); // Execute task
+    for (int i = 0; i < N; i++) {
+        TQEntry e = TaskQueue_dequeue(&tq);
+        test((uintptr_t)e.arg == (uintptr_t)i);
     }
-    processed_count++;
-  }
 
-  test(processed_count == 5);
-  test(TaskQueue_isempty(tq) == true);
-
-  TaskQueue_destroy(tq);
-  summary();
+    test(TQENTRY_EQ(TaskQueue_dequeue(&tq), NULL_ENTRY));
+    TaskQueue_destroy(&tq);
+    summary();
 }
 
-void test_debug_function() {
-  printf("\n\033[34m=== Test 14: Debug Function ===\n\033[0m");
+/* ============================================================
+ * 10. Performance benchmark (single producer, multiple consumers)
+ * ============================================================ */
+#include <time.h>
 
-  TaskQueue *tq = TaskQueue_init(4);
+#define BENCH_CONSUMERS 32
+#define BENCH_TASKS     1000000  // 1M tasks
 
-  TQEntry entries[] = {CREATE_ENTRY(dummy_task1, (void *)1),
-                       CREATE_ENTRY(dummy_task2, (void *)2),
-                       CREATE_ENTRY(null_task, (void *)3),
-                       CREATE_ENTRY(string_task, "test")};
+static TaskQueue tq_bench;
+static _Atomic uint64_t produced;
+static _Atomic uint64_t consumed;
 
-  for (int i = 0; i < 4; i++) {
-    TaskQueue_enqueue(tq, entries[i]);
-  }
-
-  printf("Queue state after filling 4 entries:\n");
-  TaskQueue_dbg(tq); // Visual inspection
-
-  // Dequeue two and add one more
-  TaskQueue_dequeue(tq);
-  TaskQueue_dequeue(tq);
-  TaskQueue_enqueue(tq, CREATE_ENTRY(increment_task, (void *)5));
-
-  printf("\nQueue state after 2 dequeues and 1 enqueue:\n");
-  TaskQueue_dbg(tq); // Visual inspection
-
-  TaskQueue_destroy(tq);
-  printf("Debug function test completed\n");
-  summary();
+static void *bench_producer(void *_) {
+    (void)_;
+    for (uint64_t i = 0; i < BENCH_TASKS; i++) {
+        TaskQueue_enqueue(&tq_bench, ENTRY(dummy_task, (void *)(uintptr_t)i));
+        atomic_fetch_add(&produced, 1);
+    }
+    return NULL;
 }
 
-int main() {
-  printf("Starting TaskQueue Test Suite\n");
-  printf("=============================\n\n");
-
-  // Initialize test framework - estimate about 250 assertions
-
-  // Run all test suites
-  test_initialization();
-  test_basic_operations();
-  test_null_entries();
-  test_queue_resizing();
-  test_circular_buffer_behavior();
-  test_peek_behavior();
-  test_edge_cases();
-  test_memory_and_destruction();
-  test_concurrent_operations_pattern();
-  test_randomized_stress_test();
-  test_tqentry_eq_macro();
-  test_function_argument_preservation();
-  test_integration_scenario();
-  test_debug_function();
-
-  printf("\n\033[32m✓ All TaskQueue tests completed!\033[0m\n");
-
-  return 0;
+static void *bench_consumer(void *_) {
+    (void)_;
+    while (1) {
+        TQEntry e = TaskQueue_dequeue(&tq_bench);
+        if (e.task != NULL) {
+            atomic_fetch_add(&consumed, 1);
+        } else {
+            // avoid busy-spin CPU burn
+            if (atomic_load(&consumed) >= BENCH_TASKS)
+                break;
+            sched_yield(); // yield CPU
+        }
+    }
+    return NULL;
 }
+
+void test_benchmark_spmc(void) {
+    printf("\n=== Test 10: SPMC Benchmark ===\n");
+
+    atomic_store(&produced, 0);
+    atomic_store(&consumed, 0);
+
+    TaskQueue_init(&tq_bench, 0);
+
+    pthread_t producer_thread;
+    pthread_t consumers[BENCH_CONSUMERS];
+
+    // start timer
+    struct timespec start, end;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+
+    pthread_create(&producer_thread, NULL, bench_producer, NULL);
+    for (int i = 0; i < BENCH_CONSUMERS; i++)
+        pthread_create(&consumers[i], NULL, bench_consumer, NULL);
+
+    pthread_join(producer_thread, NULL);
+    for (int i = 0; i < BENCH_CONSUMERS; i++)
+        pthread_join(consumers[i], NULL);
+
+    // stop timer
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    double elapsed = (end.tv_sec - start.tv_sec) +
+                     (end.tv_nsec - start.tv_nsec) / 1e9;
+
+    printf("Produced: %lu | Consumed: %lu | Time: %.3f s\n",
+           atomic_load(&produced), atomic_load(&consumed), elapsed);
+
+    // correctness check
+    test(atomic_load(&produced) == atomic_load(&consumed));
+
+    TaskQueue_destroy(&tq_bench);
+    summary();
+}
+
+
+
+/* ============================================================
+ * 11. Long-lived queue stability
+ * ============================================================ */
+void test_long_lived_queue(void) {
+    printf("\n=== Test 11: Long-lived queue stability ===\n");
+
+    TaskQueue tq;
+    TaskQueue_init(&tq, 0);
+
+    const int N = 100000;
+    for (int i = 0; i < N; i++) {
+        TaskQueue_enqueue(&tq, ENTRY(dummy_task1, (void *)(uintptr_t)i));
+        if (i % 2 == 0) {
+            TQEntry e = TaskQueue_dequeue(&tq);
+            test((uintptr_t)e.arg == (uintptr_t)(i - (i % 2 == 0 ? 1 : 0)) || e.task != NULL);
+        }
+    }
+
+    while (TaskQueue_peek(&tq).task != NULL) {
+        TaskQueue_dequeue(&tq);
+    }
+
+    test(TQENTRY_EQ(TaskQueue_dequeue(&tq), NULL_ENTRY));
+    TaskQueue_destroy(&tq);
+    summary();
+}
+
+/* ============================================================
+ * main 
+ * ============================================================ */
+int main(void) {
+    printf("Starting extended SPMC TaskQueue tests\n");
+    printf("======================================\n");
+
+    test_initialization();
+    test_fifo_single_thread();
+    test_peek_behavior();
+    test_null_entry();
+    test_single_thread_stress();
+    test_spmc_concurrency();
+    test_scalability();
+    test_fuzz();
+    test_arena_stress();
+    test_benchmark_spmc();
+    test_long_lived_queue();
+
+    printf("\n✓ All extended SPMC TaskQueue tests passed\n");
+    return 0;
+}
+

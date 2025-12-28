@@ -1,93 +1,103 @@
 #include "task_queue.h"
 
-#include <stdio.h>
-#include <stdlib.h>
+#include <arena.h>
 #include <pretty.h>
+#include <stdio.h>
 
+#include "../../lib/arena/components/arena.h"
 
-TaskQueue *TaskQueue_init(uint64_t init_cap) {
-  TaskQueue *tq = malloc(sizeof(TaskQueue));
-  if ( tq == NULL ){
-    error("Couldnt allocate memory for Task Queue, abort now ...");
-    return NULL;
-  }
-  if (init_cap != 0)
-    tq->capacity = init_cap;
-  else
-    tq->capacity = 64;
-  tq->size = 0;
-  tq->head = 0;
-  tq->tail = 0;
-  tq->entries = calloc(tq->capacity, sizeof(TQEntry));
-  if ( tq -> entries == NULL ){
-    error("Couldnt allocate memory for Task Queue Entries, abort now ...");
-    free(tq);
-    return NULL;
-  }
-  return tq;
-}
+bool TaskQueue_init(TaskQueue *q, uint64_t arena_size) {
+  q->arena = arena_create(arena_size);
+  if (!q->arena.head)
+    return false;
 
-bool TaskQueue_isempty(TaskQueue *tq) { return tq->size == 0; }
+  TQNode *dummy = arena_alloc_zeroed(&q->arena, sizeof(TQNode));
+  if (!dummy)
+    return false;
 
-uint64_t TaskQueue_size(TaskQueue *tq) { return tq->size; }
+  dummy->entry = NULL_ENTRY;
+  atomic_store_explicit(&dummy->next, NULL, memory_order_relaxed);
 
-TQEntry TaskQueue_peek(TaskQueue *tq) {
-  if (tq->size == 0) {
-    return NULL_ENTRY;
-  }
-  return tq->entries[tq->head];
-}
+  atomic_store_explicit(&q->head, dummy, memory_order_relaxed);
+  atomic_store_explicit(&q->tail, dummy, memory_order_relaxed);
 
-bool TaskQueue_enqueue(TaskQueue *tq, TQEntry t) {
-  if (tq->size * 4 >= tq->capacity * 3) {
-    uint64_t old_capacity = tq -> capacity;
-    tq->capacity *= 2; 
-    TQEntry* tmp_entries = malloc(tq -> capacity * sizeof(TQEntry));
-    if (tmp_entries == NULL){
-      return false;
-    }
-    uint64_t old_idx = 0;
-    for(unsigned i = 0; i < tq -> size; i++){
-      old_idx = (tq -> head + i) & (old_capacity - 1); 
-      tmp_entries[i] = tq -> entries[old_idx];
-    }
-    free(tq -> entries);
-    tq -> entries = tmp_entries;
-    tq -> head = 0;
-    tq -> tail = tq -> size;
-  }
-  tq->entries[tq->tail] = t;
-  tq->tail = (tq->tail + 1) & (tq->capacity - 1);
-  tq->size++;
   return true;
 }
 
-TQEntry TaskQueue_dequeue(TaskQueue *tq) {
-  if (tq->size == 0) {
+// bool TaskQueue_enqueue(TaskQueue *q, TQEntry entry) {
+//   TQNode *node = arena_alloc(&q->arena, sizeof(TQNode));
+//   if (!node)
+//     return false;
+//   node->entry = entry;
+//   atomic_store_explicit(&node->next, NULL, memory_order_relaxed);
+//   TQNode *prev_tail =
+//       atomic_exchange_explicit(&q->tail, node, memory_order_acq_rel);
+//   atomic_store_explicit(&prev_tail->next, node, memory_order_release);
+//   return true;
+// }
+
+bool TaskQueue_enqueue(TaskQueue *q, TQEntry entry) {
+  TQNode *node = arena_alloc(&q->arena, sizeof(TQNode));
+  if (!node)
+    return false;
+  
+  node->entry = entry;
+  atomic_store_explicit(&node->next, NULL, memory_order_relaxed);
+  
+  while (1) {
+    TQNode *tail = atomic_load_explicit(&q->tail, memory_order_acquire);
+    TQNode *next = atomic_load_explicit(&tail->next, memory_order_acquire);
+    
+    // Check if tail is still the last node
+    TQNode *current_tail = atomic_load_explicit(&q->tail, memory_order_acquire);
+    if (tail != current_tail)
+      continue;  // Tail was modified, retry
+    
+    if (next == NULL) {
+      // Tail is consistent, try to link new node
+      if (atomic_compare_exchange_weak_explicit(&tail->next, &next, node,
+                                                 memory_order_release,
+                                                 memory_order_acquire)) {
+        // Success! Try to swing tail to new node (best effort)
+        atomic_compare_exchange_weak_explicit(&q->tail, &tail, node,
+                                               memory_order_release,
+                                               memory_order_acquire);
+        return true;
+      }
+    } else {
+      // Tail is lagging, help by swinging it forward
+      atomic_compare_exchange_weak_explicit(&q->tail, &tail, next,
+                                             memory_order_release,
+                                             memory_order_acquire);
+    }
+  }
+}
+
+TQEntry TaskQueue_dequeue(TaskQueue *q) {
+  while (1) {
+    TQNode *head = atomic_load_explicit(&q->head, memory_order_acquire);
+
+    TQNode *next = atomic_load_explicit(&head->next, memory_order_acquire);
+
+    if (next == NULL)
+      return NULL_ENTRY; // empty
+
+    if (atomic_compare_exchange_weak_explicit(&q->head, &head, next,
+                                              memory_order_acq_rel,
+                                              memory_order_acquire)) {
+      return next->entry;
+    }
+  }
+}
+
+void TaskQueue_destroy(TaskQueue *q) { arena_destroy(&q->arena); }
+
+TQEntry TaskQueue_peek(TaskQueue *q) {
+  TQNode *head = atomic_load_explicit(&q->head, memory_order_acquire);
+  TQNode *next = atomic_load_explicit(&head->next, memory_order_acquire);
+
+  if (!next)
     return NULL_ENTRY;
-  }
-  TQEntry ret = tq->entries[tq->head];
-  tq->head = (tq->head + 1) & (tq->capacity - 1);
-  tq->size--;
-  return ret;
-}
 
-void TaskQueue_destroy(TaskQueue *tq) {
-  free(tq->entries);
-  free(tq);
-}
-
-void TaskQueue_dbg(TaskQueue *tq) {
-  if (tq->size == 0) {
-    printf("[]\n");
-    return;
-  }
-  uint64_t beg = tq->head;
-  uint64_t end = tq->tail;
-  printf("[ ");
-  while (beg != end) {
-    printf(" (%p, %p) ", tq->entries[beg].task, tq->entries[beg].arg);
-    beg = (beg + 1) & (tq->capacity - 1);
-  }
-  printf("]\n");
+  return next->entry;
 }
