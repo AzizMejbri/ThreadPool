@@ -56,6 +56,7 @@ dockerfile linguist-language=Dockerfile
 docker-compose.yml linguist-language=YAML
 
 # MARKDOWN
+README.md linguist-documentation
 *.md linguist-language=Markdown
 *.mdx linguist-language=Markdown
 
