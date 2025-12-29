@@ -191,10 +191,10 @@ The theoretical throughput follows:
 $$ Throughput = \frac {N}{(1 + \alpha(N-1) + \beta(N-1))}\text{  Where:}
 \begin{cases}
 N: & \text{Number of threads}
-\\[4pt]
-\alpha: & \text{Contention factor (lock waiting)}
-\\[4pt]
-\beta: & \text{Coherency factor (cache invalidation)}
+\\
+\alpha:  & \text{Contention factor (lock waiting)}
+\\
+\beta : & \text{Coherency factor (cache invalidation)}
 \end{cases}
 $$
 
