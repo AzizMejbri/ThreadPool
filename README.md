@@ -188,7 +188,7 @@ int main() {
 ### Throughput Formula
 The theoretical throughput follows:
 
-$$ Throughput = \frac {N}{(1 + \alpha(N-1) + \beta(N-1))}\text{  Where:}
+$$ Throughput = \frac {N}{1 + \alpha(N-1) + \beta(N-1)}\text{  Where:}
 \begin{cases}
 N: & \text{Number of threads}
 \\
