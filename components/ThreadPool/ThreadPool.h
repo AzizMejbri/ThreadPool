@@ -47,6 +47,7 @@ typedef struct {
 
 void ThreadPool_init(ThreadPool *thp, unsigned int thread_num, int flags);
 bool ThreadPool_execute(ThreadPool *thp, Task task, Args args);
+// TODO: implement threadpool with timeout
 void ThreadPool_execute_with_timeout(ThreadPool *thp, Task task, Args args,
                                      unsigned timeout);
 void ThreadPool_shutdown(ThreadPool *thp);
